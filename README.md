@@ -4,6 +4,8 @@
 
 <br/>
 
+### CommentCart <sub>· aka FB Comment to Order Bot</sub>
+
 **Turn Facebook post comments into confirmed orders — automatically.**
 
 A self-hosted **n8n** workflow that replies to comments, opens a private chat, sells with an **AI agent**, and writes the order straight into **Google Sheets**.
@@ -354,7 +356,7 @@ Issues and PRs are welcome. If you adapt this to another channel (WhatsApp, Inst
 
 ## 🇪🇬 بالعربي
 
-**CommentCart** — بوت مبيعات لصفحات فيسبوك:
+### CommentCart <sub>· aka FB Comment to Order Bot</sub>
 
 - يلقط أي كومنت جديد على بوستاتك **كل دقيقة** (من غير webhook).
 - يرد **رد علني** على الكومنت + يبعت **رسالة خاصة** فيها السعر والمقاسات والألوان والشحن.

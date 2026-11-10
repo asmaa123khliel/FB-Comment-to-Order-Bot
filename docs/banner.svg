@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="1200" height="340" role="img" aria-label="CommentCart — turn Facebook comments into confirmed orders">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#080d1a"/>
+      <stop offset="55%" stop-color="#101733"/>
+      <stop offset="100%" stop-color="#1a0f2b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#ff5c8a"/>
+      <stop offset="50%" stop-color="#ff9f43"/>
+      <stop offset="100%" stop-color="#4fc3f7"/>
+    </linearGradient>
+    <linearGradient id="pill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.05"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="18" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="340" fill="url(#bg)"/>
+
+  <circle cx="1030" cy="60" r="150" fill="#ff5c8a" opacity="0.14" filter="url(#glow)"/>
+  <circle cx="1130" cy="290" r="130" fill="#4fc3f7" opacity="0.12" filter="url(#glow)"/>
+  <circle cx="90" cy="310" r="120" fill="#ff9f43" opacity="0.10" filter="url(#glow)"/>
+
+  <g opacity="0.10" stroke="#ffffff" stroke-width="1">
+    <path d="M0 80 H1200 M0 160 H1200 M0 240 H1200"/>
+    <path d="M100 0 V340 M300 0 V340 M500 0 V340 M700 0 V340 M900 0 V340 M1100 0 V340"/>
+  </g>
+
+  <g transform="translate(80,64)">
+    <rect width="56" height="56" rx="16" fill="url(#accent)" opacity="0.95"/>
+    <path d="M17 18 h22 a5 5 0 0 1 5 5 v10 a5 5 0 0 1 -5 5 h-11 l-8 7 v-7 h-3 a5 5 0 0 1 -5 -5 v-10 a5 5 0 0 1 5 -5 z" fill="#0b1020"/>
+    <circle cx="24" cy="28" r="2.2" fill="#ff9f43"/>
+    <circle cx="30" cy="28" r="2.2" fill="#ff5c8a"/>
+    <circle cx="36" cy="28" r="2.2" fill="#4fc3f7"/>
+  </g>
+
+  <text x="156" y="106" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="68" font-weight="700" fill="#ffffff">Comment<tspan fill="url(#accent)">Cart</tspan></text>
+
+  <text x="82" y="164" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="25" fill="#c9cee6">Turn Facebook comments into confirmed orders — automatically.</text>
+  <text x="82" y="198" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="17" fill="#8892b8">Public reply  ·  Private DM  ·  AI sales chat  ·  Google Sheets orders</text>
+
+  <g font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif" font-size="15" fill="#e8ecff">
+    <g transform="translate(80,232)">
+      <rect width="118" height="38" rx="19" fill="url(#pill)" stroke="#ffffff" stroke-opacity="0.18"/>
+      <text x="59" y="24" text-anchor="middle">⚙️ n8n</text>
+    </g>
+    <g transform="translate(210,232)">
+      <rect width="186" height="38" rx="19" fill="url(#pill)" stroke="#ffffff" stroke-opacity="0.18"/>
+      <text x="93" y="24" text-anchor="middle">🔷 Meta Graph API</text>
+    </g>
+    <g transform="translate(408,232)">
+      <rect width="150" height="38" rx="19" fill="url(#pill)" stroke="#ffffff" stroke-opacity="0.18"/>
+      <text x="75" y="24" text-anchor="middle">✨ Gemini</text>
+    </g>
+    <g transform="translate(570,232)">
+      <rect width="188" height="38" rx="19" fill="url(#pill)" stroke="#ffffff" stroke-opacity="0.18"/>
+      <text x="94" y="24" text-anchor="middle">📊 Google Sheets</text>
+    </g>
+    <g transform="translate(770,232)">
+      <rect width="164" height="38" rx="19" fill="url(#pill)" stroke="#ffffff" stroke-opacity="0.18"/>
+      <text x="82" y="24" text-anchor="middle">🐳 Docker</text>
+    </g>
+  </g>
+</svg>

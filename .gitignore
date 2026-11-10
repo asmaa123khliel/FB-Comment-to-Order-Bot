@@ -1,0 +1,40 @@
+# ---- secrets (never commit) ----
+fb_token.txt
+.env
+.env.*
+!.env.example
+*service-account*.json
+*credentials*.json
+secrets/
+*.pem
+*.key
+
+# ---- n8n / local data ----
+*.sqlite
+*.sqlite3
+*.db
+.n8n/
+backups/
+_backup_*/
+
+# ---- media (473 MB demo recording — host it on YouTube instead) ----
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# ---- dependencies / builds ----
+node_modules/
+dist/
+build/
+
+# ---- editors / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- logs ----
+*.log
+npm-debug.log*

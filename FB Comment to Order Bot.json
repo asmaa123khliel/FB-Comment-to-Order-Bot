@@ -1,0 +1,1182 @@
+{
+  "name": "FB Comment to Order Bot",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "fb-sales-bot",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "60e286c1-0625-455d-961b-c24be6935a4f",
+      "name": "FB Verify (GET)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -192,
+        48
+      ],
+      "webhookId": "a1b2c3d4-0000-4000-8000-000000000001"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.query['hub.verify_token'] }}",
+              "rightValue": "my_verify_token_122",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "95c23207-0291-4446-8d72-9233373facc4",
+      "name": "Token OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        32,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.query['hub.challenge'] || $json.query.hub_challenge }}",
+        "options": {}
+      },
+      "id": "13668f62-d588-4d9a-82f3-7c62f8324cd2",
+      "name": "Respond Challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        256,
+        -32
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Forbidden",
+        "options": {
+          "responseCode": 403
+        }
+      },
+      "id": "a8d8722a-f23f-42b1-96e1-e493fe4bbb97",
+      "name": "Respond 403",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        256,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fb-sales-bot",
+        "options": {}
+      },
+      "id": "05f64594-1604-4c79-85bc-90de87723d64",
+      "name": "FB Events (POST)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -288,
+        272
+      ],
+      "webhookId": "a1b2c3d4-0000-4000-8000-000000000002"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Parse Events — بيستقبل 3 مصادر:\n//  1) Webhook (feed / messaging) — خطة احتياطية لو التطبيق بقى Live\n//  2) Fetch Comments — polling كومنتات كل دقيقة\n//  3) Fetch Conversations — polling رسايل الماسنجر كل دقيقة\n// ============================================================\nconst PAGE_ID = '550829251444940';\n\nconst staticData = $getWorkflowStaticData('global');\nconst processedComments = new Set(staticData.processedComments || []);\nconst processedMessages = new Set(staticData.processedMessages || []);\nconst seen = new Set();\n\nconst pendingComments = [];\nconst pendingMessages = []; // { event, ids: [] }\nlet sawPosts = false;\nlet sawConversations = false;\n\nfunction addComment(ev) {\n  if (!ev.comment_id) return;\n  if (seen.has(ev.comment_id) || processedComments.has(ev.comment_id)) return;\n  seen.add(ev.comment_id);\n  pendingComments.push(ev);\n}\n\nfunction addMessage(ev, ids) {\n  const list = ids || [ev.message_id];\n  if (!ev.message_id) return;\n  if (list.some((id) => seen.has(id) || processedMessages.has(id))) return;\n  for (const id of list) seen.add(id);\n  pendingMessages.push({ event: ev, ids: list });\n}\n\nconst items = $input.all().map((i) => i.json || {});\n\nfor (const j of items) {\n  // ---------- 1) Webhook ----------\n  const body = j.body || {};\n  for (const entry of body.entry || []) {\n    const pageId = entry.id || PAGE_ID;\n    for (const ch of entry.changes || []) {\n      const v = ch.value || {};\n      if (ch.field === 'feed' && v.item === 'comment' && v.verb === 'add') {\n        if (v.from && v.from.id === pageId) continue;\n        if (v.parent_id && v.parent_id !== v.post_id) continue;\n        addComment({\n          type: 'comment', page_id: pageId, comment_id: v.comment_id, post_id: v.post_id,\n          from_id: (v.from && v.from.id) || '', from_name: (v.from && v.from.name) || '',\n          text: v.message || '',\n        });\n      }\n    }\n    for (const m of entry.messaging || []) {\n      if (!m.message || m.message.is_echo || !m.sender || m.sender.id === pageId) continue;\n      addMessage({\n        type: 'message', page_id: pageId, user_id: m.sender.id,\n        message_id: m.message.mid || 'wh_' + m.sender.id + '_' + (m.timestamp || Date.now()),\n        text: m.message.text || '[العميل بعت مرفق أو صورة]',\n        created_time: new Date(m.timestamp || Date.now()).toISOString(),\n      });\n    }\n  }\n\n  // ---------- 2) Graph API polling ----------\n  const arr = Array.isArray(j.data) ? j.data : [];\n  if (!arr.length) continue;\n\n  const isConversations = arr.some((x) => x && x.messages);\n  if (isConversations) {\n    sawConversations = true;\n    for (const conv of arr) {\n      const msgs = (conv.messages && conv.messages.data) || [];\n      const fresh = msgs.filter((m) => {\n        const f = (m.from && m.from.id) || '';\n        return f && f !== PAGE_ID && m.id && !processedMessages.has(m.id) && !seen.has(m.id);\n      });\n      if (!fresh.length) continue;\n      fresh.sort((a, b) => String(a.created_time).localeCompare(String(b.created_time)));\n\n      const firstRun = !staticData.pollMessagesInitialized;\n      // أول تشغيل: نرد على أحدث رسالة بس (عشان مفيش سبام لرسايل قديمة)\n      const toReply = firstRun ? fresh.slice(-1) : fresh;\n      const last = toReply[toReply.length - 1];\n      const ageHours = (Date.now() - new Date(last.created_time).getTime()) / 3600000;\n\n      if (ageHours > 23.5) {\n        for (const m of fresh) { processedMessages.add(m.id); seen.add(m.id); }\n        continue;\n      }\n\n      const text = toReply.map((m) => m.message || '[العميل بعت مرفق أو صورة]').join('\\n');\n      addMessage(\n        {\n          type: 'message', page_id: PAGE_ID, user_id: last.from.id,\n          message_id: last.id, text, created_time: last.created_time,\n        },\n        fresh.map((m) => m.id),\n      );\n    }\n  } else {\n    sawPosts = true;\n    for (const post of arr) {\n      const postId = post.id;\n      const pageId = String(postId).split('_')[0];\n      const comments = (post.comments && post.comments.data) || [];\n      for (const c of comments) {\n        const fromId = (c.from && c.from.id) || '';\n        if (fromId && fromId === pageId) continue;\n        addComment({\n          type: 'comment', page_id: pageId, comment_id: c.id, post_id: postId,\n          from_id: fromId, from_name: (c.from && c.from.name) || '', text: c.message || '',\n        });\n      }\n    }\n  }\n}\n\n// ---------- أول تشغيل للكومنتات: سجّل القديم من غير رد ----------\nif (sawPosts && !staticData.pollInitialized) {\n  staticData.pollInitialized = true;\n  for (const c of pendingComments) processedComments.add(c.comment_id);\n  pendingComments.length = 0;\n}\nif (sawConversations && !staticData.pollMessagesInitialized) {\n  staticData.pollMessagesInitialized = true;\n}\n\n// ---------- رسالة واحدة كل دورة (عشان الـ AI Agent يشتغل صح) ----------\nconst messagesToRun = pendingMessages.slice(0, 1);\n\n// ---------- سجّل اللي اتعالج ----------\nfor (const c of pendingComments) processedComments.add(c.comment_id);\nfor (const m of messagesToRun) for (const id of m.ids) processedMessages.add(id);\n\nstaticData.processedComments = [...processedComments].slice(-500);\nstaticData.processedMessages = [...processedMessages].slice(-500);\n\n// الرسايل الزيادة (pendingMessages.slice(1)) مش بنسجلها → هتظهر تاني في الدورة الجاية\nreturn [\n  ...pendingComments.map((json) => ({ json })),\n  ...messagesToRun.map((m) => ({ json: m.event })),\n];\n"
+      },
+      "id": "80ab5f1c-f449-46d5-a497-7d4a507b22e1",
+      "name": "Parse Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        32,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.type }}",
+              "rightValue": "comment",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3cdd570d-6232-4d82-92ca-d1d91132784f",
+      "name": "Is Comment?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        256,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M",
+          "mode": "list",
+          "cachedResultName": "Facebook Sales Bot",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Products",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "post_id",
+              "lookupValue": "={{ $json.post_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "f3860638-304d-4da0-a522-e94350346fbc",
+      "name": "Get Product",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        496,
+        272
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "1FIskRVSHtn3LcsP",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const ev = $('Parse Events').item.json;\nconst p = $json || {};\nconst first = (ev.from_name || '').split(' ')[0] || 'حضرتك';\nconst replies = [\n  'أهلاً بيك يا فندم 🌹 بعتنالك التفاصيل والأسعار على الخاص',\n  'تحت أمرك 🌸 دخلنا لحضرتك على الخاص بكل التفاصيل',\n  'نورتنا ❤️ راجع رسايل الخاص فيها كل التفاصيل والسعر'\n];\nconst comment_reply = replies[Math.floor(Math.random() * replies.length)];\nlet dm;\nif (p.name) {\n  dm = [\n    `أهلاً ${first} 🌹`,\n    `شكراً لاهتمامك بـ ${p.name}`,\n    ``,\n    `💰 السعر: ${p.price} جنيه`,\n    p.sizes ? `📏 المقاسات: ${p.sizes}` : null,\n    p.colors ? `🎨 الألوان: ${p.colors}` : null,\n    p.details ? `📝 ${p.details}` : null,\n    p.shipping ? `🚚 الشحن: ${/^\\d+(\\.\\d+)?$/.test(String(p.shipping).trim()) ? String(p.shipping).trim() + \" جنيه\" : p.shipping}` : null,\n    `💵 الدفع عند الاستلام`,\n    ``,\n    `لو حابب تحجز ابعتلي المقاس واللون وأنا أكمل معاك 👇`\n  ].filter(x => x !== null).join('\\n');\n} else {\n  dm = `أهلاً ${first} 🌹\\nشكراً لتعليقك! قولي حضرتك مهتم بأنهي منتج وأنا أبعتلك التفاصيل والسعر 👇`;\n}\nconst product_details = [\n  p.sizes && `المقاسات: ${p.sizes}`, p.colors && `الألوان: ${p.colors}`,\n  p.details, p.shipping && `الشحن: ${p.shipping}`\n].filter(Boolean).join(' | ');\nreturn { json: { comment_id: ev.comment_id, user_id: ev.from_id, post_id: ev.post_id,\n  comment_reply, dm_text: dm, product_name: p.name || '', product_price: p.price || '', product_details } };"
+      },
+      "id": "56887542-6501-4fe2-a328-1fd1e1c44c89",
+      "name": "Build Comment Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $json.comment_id }}/comments",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ message: $json.comment_reply }) }}",
+        "options": {}
+      },
+      "id": "a97d8454-d796-4da0-bab1-deac0e070980",
+      "name": "Reply To Comment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        928,
+        288
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Yn4S71HVsMhZdK6D",
+          "name": "FaceBook"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v21.0/me/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ recipient: { comment_id: $('Build Comment Reply').item.json.comment_id }, message: { text: $('Build Comment Reply').item.json.dm_text } }) }}",
+        "options": {}
+      },
+      "id": "069bec83-1c76-4694-a4bb-1673c40c8c88",
+      "name": "Send Private DM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1152,
+        288
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Yn4S71HVsMhZdK6D",
+          "name": "FaceBook"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const out = [];\nconst comments = $('Build Comment Reply').all();\n$input.all().forEach((item, i) => {\n  const rid = item.json.recipient_id;\n  if (!rid) return; // الرسالة الخاصة فشلت\n  const c = comments[i].json;\n  out.push({ json: { user_id: rid, post_id: c.post_id, product_name: c.product_name,\n    product_price: c.product_price, product_details: c.product_details,\n    date: new Date().toISOString() } });\n});\nreturn out;"
+      },
+      "id": "061f690e-ae8a-465f-803a-39dbafe34641",
+      "name": "Prepare Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1376,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M",
+          "mode": "list",
+          "cachedResultName": "Facebook Sales Bot",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 90480355,
+          "mode": "list",
+          "cachedResultName": "Leads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M/edit#gid=90480355"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "user_id": "={{ $json.user_id }}",
+            "post_id": "={{ $json.post_id }}",
+            "product_name": "={{ $json.product_name }}",
+            "product_price": "={{ $json.product_price }}",
+            "product_details": "={{ $json.product_details }}",
+            "date": "={{ $json.date }}"
+          },
+          "matchingColumns": [
+            "user_id"
+          ],
+          "schema": [
+            {
+              "id": "user_id",
+              "displayName": "user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "post_id",
+              "displayName": "post_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "product_name",
+              "displayName": "product_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "product_price",
+              "displayName": "product_price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "product_details",
+              "displayName": "product_details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "date",
+              "displayName": "date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "82a80a03-ab3c-4c55-966a-f239c1797525",
+      "name": "Save Lead",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1600,
+        288
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "1FIskRVSHtn3LcsP",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M",
+          "mode": "list",
+          "cachedResultName": "Facebook Sales Bot",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 90480355,
+          "mode": "list",
+          "cachedResultName": "Leads",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M/edit#gid=90480355"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "user_id",
+              "lookupValue": "={{ $json.user_id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "691462bf-fc7f-4c17-be85-c1b2c05f1ebb",
+      "name": "Get Lead",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        496,
+        608
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleApi": {
+          "id": "1FIskRVSHtn3LcsP",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M",
+          "mode": "list",
+          "cachedResultName": "Facebook Sales Bot",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Products",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M/edit#gid=0"
+        },
+        "options": {}
+      },
+      "id": "8736cd63-e361-4eed-8f05-b070870b2c26",
+      "name": "Get Products (All)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        720,
+        608
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "credentials": {
+        "googleApi": {
+          "id": "1FIskRVSHtn3LcsP",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const products = $input.all().map(i => i.json).filter(p => p.name);\nconst lead = ($('Get Lead').all()[0] || {}).json || {};\nconst ev = $('Parse Events').all().find(i => i.json.type === 'message').json;\n\nconst catalog = products.map(p =>\n  `- ${p.name} | السعر: ${p.price} جنيه | المقاسات: ${p.sizes || '-'} | الألوان: ${p.colors || '-'} | ${p.details || ''} | الشحن: ${p.shipping || '-'}`\n).join('\\n');\n\nconst leadProduct = lead.product_name\n  ? `${lead.product_name} - ${lead.product_price} جنيه - ${lead.product_details || ''}`\n  : 'غير معروف (اسأله هو مهتم بأنهي منتج)';\n\nconst system = `انت موظف مبيعات لطيف في صفحة بيع على فيسبوك. بتتكلم بالعامية المصرية بأسلوب ودود ومختصر ومعاك إيموجي خفيفة.\nالمنتج اللي العميل علّق عليه: ${leadProduct}\n\nكتالوج المنتجات المتاح (متعتمدش على أي معلومة برا الكتالوج):\n${catalog}\n\nقواعدك:\n1) جاوب على استفسارات المقاسات والألوان والشحن والسعر من الكتالوج فقط. لو مش متأكد قول \"هسأل المسؤول وأرجعلك\" وخلي needs_human = true.\n2) الدفع كاش عند الاستلام بس.\n3) لما العميل يقرر يشتري، اجمع منه خطوة خطوة (من غير ما تسأل كل حاجة مرة واحدة): الاسم، رقم الموبايل (11 رقم بيبدأ بـ 01)، المحافظة، العنوان بالتفصيل، المنتج، المقاس، اللون، الكمية.\n4) لما تجمع كل البيانات اكتبله ملخص الأوردر والإجمالي (سعر المنتج × الكمية + الشحن لو معروف) واسأله يأكد.\n5) لا تخلي order_ready = true غير بعد ما العميل يأكد الملخص صراحةً (زي: تمام، أيوه، أكد). بعدها اشكره وقوله إن الأوردر اتسجل وهيتواصل معاه مندوب الشحن.\n6) متكررش الأوردر لو اتأكد قبل كده.\n\nرد دايماً بصيغة JSON فقط (من غير أي نص برا الـ JSON ومن غير علامات markdown) بالشكل ده بالظبط:\n{\"reply\":\"نص الرد للعميل\",\"order_ready\":false,\"needs_human\":false,\"order\":{\"name\":\"\",\"phone\":\"\",\"governorate\":\"\",\"address\":\"\",\"product\":\"\",\"size\":\"\",\"color\":\"\",\"qty\":1,\"price\":0,\"shipping_fee\":0,\"notes\":\"\"}}`;\n\nreturn [{ json: { user_id: ev.user_id, text: ev.text, system, lead_product: lead.product_name || '' } }];"
+      },
+      "id": "245c8609-fb24-4d9b-904d-61efc5b14049",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        928,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.text }}",
+        "options": {
+          "systemMessage": "={{ $json.system }}"
+        }
+      },
+      "id": "0850af16-937a-42fd-96dc-05ceb5782e06",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        1152,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Build Prompt').item.json.user_id }}",
+        "contextWindowLength": 14
+      },
+      "id": "19f6bda5-5f08-4c1a-b3e8-1ef1c07c64a3",
+      "name": "Chat Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        1248,
+        832
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = String($input.first().json.output || $input.first().json.text || '');\nlet data;\ntry {\n  const m = raw.match(/\\{[\\s\\S]*\\}/);\n  data = JSON.parse(m ? m[0] : raw);\n} catch (e) {\n  data = { reply: raw.replace(/```json|```/g, '').trim() || 'ثواني وهرجعلك 🙏', order_ready: false, order: {} };\n}\nconst ev = $('Build Prompt').first().json;\nreturn [{ json: { user_id: ev.user_id, reply: data.reply || 'ثواني وهرجعلك 🙏',\n  order_ready: data.order_ready === true, needs_human: data.needs_human === true,\n  order: data.order || {}, lead_product: ev.lead_product } }];"
+      },
+      "id": "d000cb5c-b33e-4144-adb9-a8c15b1d2e2c",
+      "name": "Parse Agent Output",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v21.0/me/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ recipient: { id: $json.user_id }, messaging_type: 'RESPONSE', message: { text: $json.reply } }) }}",
+        "options": {}
+      },
+      "id": "2e723124-58a7-4627-a327-fdad0545f24f",
+      "name": "Send Chat Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1728,
+        608
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Yn4S71HVsMhZdK6D",
+          "name": "FaceBook"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Parse Agent Output').first().json.order_ready }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "18b99487-6063-44e9-987a-8491b414327b",
+      "name": "Order Ready?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1952,
+        608
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const d = $('Parse Agent Output').first().json;\nconst o = d.order || {};\nconst qty = Number(o.qty) || 1;\nconst price = Number(o.price) || 0;\nconst ship = Number(o.shipping_fee) || 0;\nreturn [{ json: {\n  date: new Date().toLocaleString('en-GB', { timeZone: 'Africa/Cairo' }),\n  order_id: 'ORD-' + Date.now().toString().slice(-7),\n  name: o.name || '', phone: o.phone || '', governorate: o.governorate || '', address: o.address || '',\n  product: o.product || d.lead_product || '', size: o.size || '', color: o.color || '',\n  qty, price, shipping_fee: ship, total: price * qty + ship,\n  payment: 'كاش عند الاستلام', notes: o.notes || '', fb_user_id: d.user_id, status: 'جديد'\n} }];"
+      },
+      "id": "8e777662-904e-4f01-ae95-e63e4079b6e0",
+      "name": "Build Order Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2176,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M",
+          "mode": "list",
+          "cachedResultName": "Facebook Sales Bot",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1338098908,
+          "mode": "list",
+          "cachedResultName": "Orders",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1LyxztK5tOkJE2HFnUBOei2KhMn7-_6YXqlgjcW3Un4M/edit#gid=1338098908"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "date": "={{ $json.date }}",
+            "order_id": "={{ $json.order_id }}",
+            "name": "={{ $json.name }}",
+            "phone": "={{ $json.phone }}",
+            "governorate": "={{ $json.governorate }}",
+            "address": "={{ $json.address }}",
+            "product": "={{ $json.product }}",
+            "size": "={{ $json.size }}",
+            "color": "={{ $json.color }}",
+            "qty": "={{ $json.qty }}",
+            "price": "={{ $json.price }}",
+            "shipping_fee": "={{ $json.shipping_fee }}",
+            "total": "={{ $json.total }}",
+            "payment": "={{ $json.payment }}",
+            "notes": "={{ $json.notes }}",
+            "fb_user_id": "={{ $json.fb_user_id }}",
+            "status": "={{ $json.status }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "date",
+              "displayName": "date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "order_id",
+              "displayName": "order_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "governorate",
+              "displayName": "governorate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "address",
+              "displayName": "address",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "product",
+              "displayName": "product",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "size",
+              "displayName": "size",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "color",
+              "displayName": "color",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "qty",
+              "displayName": "qty",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "price",
+              "displayName": "price",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "shipping_fee",
+              "displayName": "shipping_fee",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "total",
+              "displayName": "total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "payment",
+              "displayName": "payment",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "notes",
+              "displayName": "notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "fb_user_id",
+              "displayName": "fb_user_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "0c2f7c5a-21c7-404d-9b4d-b80fd2f0f79c",
+      "name": "Save Order",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2400,
+        592
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "1FIskRVSHtn3LcsP",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        1088,
+        832
+      ],
+      "id": "4b9bdc01-2114-4c87-bb1f-554d85afbb4c",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "y7uFyE3Sq304YV34",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "36c2a594-10e7-4ff1-a6fc-ec8f873b145b",
+      "name": "Every Minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -496,
+        528
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://graph.facebook.com/v21.0/me/posts?fields=id,message,created_time,comments{id,message,from,created_time,can_reply_privately}&limit=10",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "334c5aa3-6109-43be-8651-a8467b807f23",
+      "name": "Fetch Comments",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -192,
+        624
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Yn4S71HVsMhZdK6D",
+          "name": "FaceBook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "url": "https://graph.facebook.com/v21.0/me/conversations?fields=id,updated_time,messages.limit(10){id,message,from,created_time}&limit=25",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "baa371dd-e606-41b5-b5f8-d853d70bbe61",
+      "name": "Fetch Conversations",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -192,
+        784
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Yn4S71HVsMhZdK6D",
+          "name": "FaceBook"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "FB Verify (GET)": {
+      "main": [
+        [
+          {
+            "node": "Token OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Token OK?": {
+      "main": [
+        [
+          {
+            "node": "Respond Challenge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond 403",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FB Events (POST)": {
+      "main": [
+        [
+          {
+            "node": "Parse Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Events": {
+      "main": [
+        [
+          {
+            "node": "Is Comment?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Comment?": {
+      "main": [
+        [
+          {
+            "node": "Get Product",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Product": {
+      "main": [
+        [
+          {
+            "node": "Build Comment Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Comment Reply": {
+      "main": [
+        [
+          {
+            "node": "Reply To Comment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply To Comment": {
+      "main": [
+        [
+          {
+            "node": "Send Private DM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Private DM": {
+      "main": [
+        [
+          {
+            "node": "Prepare Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Lead": {
+      "main": [
+        [
+          {
+            "node": "Save Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Lead": {
+      "main": [
+        [
+          {
+            "node": "Get Products (All)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Products (All)": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Agent Output": {
+      "main": [
+        [
+          {
+            "node": "Send Chat Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Chat Reply": {
+      "main": [
+        [
+          {
+            "node": "Order Ready?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Order Ready?": {
+      "main": [
+        [
+          {
+            "node": "Build Order Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Order Row": {
+      "main": [
+        [
+          {
+            "node": "Save Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every Minute": {
+      "main": [
+        [
+          {
+            "node": "Fetch Comments",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Conversations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Comments": {
+      "main": [
+        [
+          {
+            "node": "Parse Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Conversations": {
+      "main": [
+        [
+          {
+            "node": "Parse Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}
